@@ -1,0 +1,71 @@
+/* Celestial Sitemap – Admin Styles */
+
+.cel-wrap {
+    max-width: 960px;
+}
+
+.cel-card {
+    background: #fff;
+    border: 1px solid #c3c4c7;
+    border-radius: 4px;
+    padding: 16px 24px;
+    margin-bottom: 20px;
+}
+
+.cel-card h2 {
+    margin-top: 0;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #eee;
+    font-size: 1.15em;
+}
+
+/* Meta box */
+.cel-metabox label {
+    display: block;
+    margin-bottom: 4px;
+}
+
+.cel-metabox .description {
+    color: #666;
+    font-size: 12px;
+}
+
+/* Tables */
+.cel-wrap .widefat td,
+.cel-wrap .widefat th {
+    vertical-align: middle;
+}
+
+.cel-wrap code {
+    background: #f0f0f1;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 13px;
+}
+
+/* Buttons */
+.cel-wrap .button-hero {
+    font-size: 14px;
+    padding: 8px 24px;
+    height: auto;
+}
+
+/* Notices */
+.cel-wrap .notice {
+    margin: 12px 0;
+}
+
+/* Pagination */
+.cel-pagination {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid #eee;
+}
+
+.cel-pagination-info {
+    color: #50575e;
+    font-size: 13px;
+}
