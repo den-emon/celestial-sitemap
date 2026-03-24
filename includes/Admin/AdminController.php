@@ -258,7 +258,7 @@ final class AdminController
         foreach ($textFields as $key => $sanitizer) {
             if (isset($_POST[$key])) {
                 $value = call_user_func($sanitizer, wp_unslash($_POST[$key]));
-                update_option($key, $value);
+                $this->opts->set($key, $value);
             }
         }
 
@@ -276,23 +276,23 @@ final class AdminController
 
         foreach ($checkboxFields as $key) {
             $value = isset($_POST[$key]) ? 1 : 0;
-            update_option($key, $value);
+            $this->opts->set($key, $value);
         }
 
         // Post types (array)
         if (isset($_POST['cel_sitemap_post_types'])) {
             $pts = array_map('sanitize_key', (array) $_POST['cel_sitemap_post_types']);
-            update_option('cel_sitemap_post_types', $pts);
+            $this->opts->set('cel_sitemap_post_types', $pts);
         } else {
-            update_option('cel_sitemap_post_types', []);
+            $this->opts->set('cel_sitemap_post_types', []);
         }
 
         // Taxonomies (array)
         if (isset($_POST['cel_sitemap_taxonomies'])) {
             $taxs = array_map('sanitize_key', (array) $_POST['cel_sitemap_taxonomies']);
-            update_option('cel_sitemap_taxonomies', $taxs);
+            $this->opts->set('cel_sitemap_taxonomies', $taxs);
         } else {
-            update_option('cel_sitemap_taxonomies', []);
+            $this->opts->set('cel_sitemap_taxonomies', []);
         }
 
         // GSC credentials — encrypt before storing
@@ -301,14 +301,14 @@ final class AdminController
             if (isset($_POST[$key])) {
                 $raw = sanitize_text_field(wp_unslash($_POST[$key]));
                 $encrypted = Options::encrypt($raw);
-                update_option($key, $encrypted);
+                $this->opts->set($key, $encrypted);
             }
         }
 
         // GSC client ID (not secret, no encryption needed)
         if (isset($_POST['cel_gsc_client_id'])) {
             $value = sanitize_text_field(wp_unslash($_POST['cel_gsc_client_id']));
-            update_option('cel_gsc_client_id', $value);
+            $this->opts->set('cel_gsc_client_id', $value);
         }
 
         // Invalidate the Options in-memory cache so subsequent reads see new values

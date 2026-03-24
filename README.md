@@ -1,4 +1,4 @@
-# Celestial Sitemap v3.5.1
+# Celestial Sitemap v3.5.2
 
 Enterprise-grade WordPress SEO plugin.
 
@@ -69,10 +69,11 @@ HeadManager orchestrates CanonicalManager and SchemaManager — they no longer h
 |-----------------------------|-------------------------------------|----------|
 | `plugins_loaded`            | `Plugin::boot()`                    | 10       |
 | `init`                      | `SitemapRouter::addRewriteRules`    | 1        |
+| `init`                      | `SitemapRouter::maybeServeEarly`    | 99       |
+| `wp_loaded`                 | `SitemapRouter::maybeFlushRewriteRules` | 10   |
 | `admin_init`                | `TaxonomyFields::registerTaxonomyHooks` | 10  |
 | `template_redirect`         | `RedirectManager::handleRedirect`   | 1        |
 | `template_redirect`         | `HeadManager::collect`              | 10       |
-| `template_redirect`         | `SitemapRouter::handleRequest`      | 10       |
 | `template_redirect`         | `NotFoundLogger::log404`            | 99       |
 | `wp_head`                   | `HeadManager::outputHead`           | 1        |
 | `pre_get_document_title`    | `HeadManager::filterTitle`          | 99       |
@@ -277,6 +278,21 @@ The full schema array can be further customized via `cel_schema_webpage`.
 15. **WP core sitemaps disabled** — prevents duplicate sitemap systems
 
 ## Changelog
+
+### 3.5.2
+
+**Bug Fix — Sitemap routing stability & plugin coexistence:**
+
+- **Rewrite rules flush moved to `wp_loaded`** — Previously, `flush_rewrite_rules` ran at `init:1`, before other plugins registered their rewrite rules. This caused the persisted rule set to be incomplete, silently breaking URL routing for WooCommerce, Yoast, and other plugins that register rules at `init:10+`. The flush now runs at `wp_loaded`, after all `init` callbacks have completed (`SitemapRouter.php`)
+- **404 sitemap response headers** — Requests for non-existent sitemap types (e.g., `/cel-sitemap-foobar.xml`) now return proper `Content-Type: application/xml`, `X-Robots-Tag: noindex`, and `X-Content-Type-Options: nosniff` headers. Previously, the 404 path sent raw XML with default `text/html` Content-Type, causing browsers to render an invisible page. Output buffer cleanup (`cleanOutputBuffer()`) is also applied to prevent stray plugin output from corrupting the XML (`SitemapRouter.php`)
+- **Self-healing flush loop prevention** — Added a transient guard (`cel_self_heal_done`, 1-hour TTL) to the self-healing rewrite rule check. In environments with object cache (Redis/Memcached), stale cache data could cause `flush_rewrite_rules` to fire on every request. The guard limits self-healing flushes to at most once per hour (`SitemapRouter.php`)
+- **Stale class docblock updated** — Architecture documentation in `SitemapRouter` now correctly describes `init:99` URI-based serving and `wp_loaded` flush timing instead of the removed `template_redirect` approach (`SitemapRouter.php`)
+
+**Files Modified:**
+- `celestial-sitemap.php` — version bump to 3.5.2
+- `includes/Sitemap/SitemapRouter.php` — flush timing, 404 headers, self-healing guard, docblock
+- `includes/Core/Migrator.php` — comment update (`init` → `wp_loaded`)
+- `README.md` — hook table updated (`wp_loaded` entry added), changelog
 
 ### 3.5.1
 

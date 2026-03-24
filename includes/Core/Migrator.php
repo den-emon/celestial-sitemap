@@ -54,7 +54,7 @@ final class Migrator
             self::runMigrations($stored);
             update_option('cel_version', CEL_VERSION, true);
 
-            // Flag for SitemapRouter to flush rewrite rules at `init`.
+            // Flag for SitemapRouter to flush rewrite rules at `wp_loaded`.
             // Cannot flush here (plugins_loaded) because post types are not yet registered.
             update_option('cel_flush_rewrite_rules', 1, true);
         } catch (\Throwable $e) {

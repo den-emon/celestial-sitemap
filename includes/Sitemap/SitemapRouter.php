@@ -14,8 +14,9 @@ if (! defined('ABSPATH')) {
  * XML Sitemap system with file-based pre-generation.
  *
  * Architecture:
- *  - Registers rewrite rules once in `init`.
- *  - Serves sitemaps via `template_redirect`.
+ *  - Registers rewrite rules at `init:1`.
+ *  - Serves sitemaps early at `init:99` via URI detection (pre-empts competing plugins).
+ *  - Flushes rewrite rules at `wp_loaded` (after all plugins register their rules).
  *  - Two-tier caching: file cache (primary) + transient fallback.
  *  - Background pre-generation via cron (debounced 30s after content changes).
  *  - Auto-invalidates on post save/delete/term changes via version counter.
@@ -66,8 +67,17 @@ final class SitemapRouter
     {
         \add_action('init', [$this, 'addRewriteRules'], 1);
         \add_filter('query_vars', [$this, 'addQueryVars']);
-        \add_action('template_redirect', [$this, 'handleRequest']);
-        \add_filter('redirect_canonical', [$this, 'preventTrailingSlash']);
+
+        // Serve cel-sitemap URLs at init:99 — after post types are registered
+        // (init:10) but before other sitemap plugins can intercept the request
+        // at wp_loaded / parse_request / template_redirect. This allows
+        // coexistence with plugins like Google XML Sitemaps.
+        \add_action('init', [$this, 'maybeServeEarly'], 99);
+
+        // Flush rewrite rules at wp_loaded — AFTER all plugins have registered
+        // their rewrite rules during init. Flushing earlier (e.g., at init:1)
+        // would persist an incomplete rule set, breaking other plugins' URLs.
+        \add_action('wp_loaded', [$this, 'maybeFlushRewriteRules']);
 
         // Cache invalidation + background pre-generation
         \add_action('save_post', [$this, 'invalidateOnSave'], 10, 2);
@@ -96,16 +106,38 @@ final class SitemapRouter
             'top'
         );
         \add_rewrite_rule('^cel-sitemap\.xsl/?$', 'index.php?cel_xsl=1', 'top');
+    }
 
-        // Auto-flush rewrite rules once after plugin update.
-        // WordPress does not re-fire the activation hook on updates,
-        // so new rewrite rules (e.g., image/news/video sitemaps) would
-        // return 404 until a manual Settings → Permalinks save.
-        // The flag is set by Migrator when the version changes and
-        // cleared here after flushing — runs exactly once per update.
+    /**
+     * Flush rewrite rules when needed — runs at wp_loaded so ALL plugins
+     * have registered their rewrite rules during init first.
+     *
+     * Two triggers:
+     *  1. Flag-based: cel_flush_rewrite_rules option set by Migrator after
+     *     a plugin version update. Fires once, then clears the flag.
+     *  2. Self-healing: sitemap rules missing from the persisted rewrite_rules
+     *     option (manual deploy, failed activation, corrupted option).
+     */
+    public function maybeFlushRewriteRules(): void
+    {
+        // 1. Flag-based flush (one-shot after plugin update)
         if (\get_option('cel_flush_rewrite_rules')) {
             \delete_option('cel_flush_rewrite_rules');
             \flush_rewrite_rules(false);
+            return;
+        }
+
+        // 2. Self-healing: check if our rules are persisted.
+        //    Guarded by a transient to prevent flush loops when object cache
+        //    returns stale rewrite_rules data (flush would fire every request).
+        if (\get_transient('cel_self_heal_done')) {
+            return;
+        }
+
+        $rules = \get_option('rewrite_rules');
+        if (\is_array($rules) && ! \in_array('index.php?cel_sitemap=index', $rules, true)) {
+            \flush_rewrite_rules(false);
+            \set_transient('cel_self_heal_done', 1, HOUR_IN_SECONDS);
         }
     }
 
@@ -117,36 +149,37 @@ final class SitemapRouter
         return $vars;
     }
 
-    /**
-     * Prevent WordPress from appending a trailing slash to sitemap/XSL URLs.
-     *
-     * @param string|false $redirect The redirect URL proposed by redirect_canonical.
-     * @return string|false
-     */
-    public function preventTrailingSlash(string|false $redirect): string|false
-    {
-        if (\get_query_var('cel_sitemap') !== '' || (string) \get_query_var('cel_xsl') !== '') {
-            return false;
-        }
-        return $redirect;
-    }
-
     // ── Request handler ──────────────────────────────────────────────
 
-    public function handleRequest(): void
+    /**
+     * Early intercept at init:99 — serves cel-sitemap URLs before other
+     * sitemap plugins (Google XML Sitemaps, etc.) can intercept the request.
+     *
+     * At init:99 all standard post types and custom post types (registered
+     * at init:10) are available, so buildIndex/buildSitemap work correctly.
+     */
+    public function maybeServeEarly(): void
     {
-        if (\get_query_var('cel_xsl')) {
+        [$type, $page, $isXsl] = $this->detectFromUri();
+
+        if ($type === '' && ! $isXsl) {
+            return;
+        }
+
+        if ($isXsl) {
             $this->serveXsl();
             exit;
         }
 
-        $type = (string) \get_query_var('cel_sitemap');
-        if ($type === '') {
-            return;
-        }
+        $this->serveSitemap($type, $page);
+    }
 
-        $page = max(1, (int) \get_query_var('cel_sitemap_page'));
-
+    /**
+     * Generate and send the sitemap XML for the given type and page.
+     * Sends appropriate headers and exits. Does not return.
+     */
+    private function serveSitemap(string $type, int $page): void
+    {
         if ($type === 'index') {
             $xml = $this->getCachedOrGenerate('idx', fn() => $this->buildIndex());
         } elseif ($type === 'news') {
@@ -160,13 +193,48 @@ final class SitemapRouter
         }
 
         if ($xml === '') {
+            $this->cleanOutputBuffer();
             \status_header(404);
+            \header('Content-Type: application/xml; charset=UTF-8');
+            \header('X-Robots-Tag: noindex');
+            \header('X-Content-Type-Options: nosniff');
             echo '<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>';
             exit;
         }
 
         $this->sendXml($xml);
         exit;
+    }
+
+    // ── URI-based fallback detection ───────────────────────────────
+
+    /**
+     * Parse REQUEST_URI to detect sitemap requests when rewrite rules fail.
+     *
+     * @return array{0: string, 1: int, 2: bool} [type, page, isXsl]
+     */
+    private function detectFromUri(): array
+    {
+        $uri  = \wp_parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH);
+        $path = $uri !== null && $uri !== false ? \rawurldecode(\basename($uri)) : '';
+
+        if ($path === 'cel-sitemap.xml') {
+            return ['index', 1, false];
+        }
+
+        if ($path === 'cel-sitemap.xsl') {
+            return ['', 1, true];
+        }
+
+        if (\preg_match('/^cel-sitemap-([a-z0-9_-]+?)-(\d+)\.xml$/', $path, $m)) {
+            return [$m[1], \max(1, (int) $m[2]), false];
+        }
+
+        if (\preg_match('/^cel-sitemap-([a-z0-9_-]+?)\.xml$/', $path, $m)) {
+            return [$m[1], 1, false];
+        }
+
+        return ['', 1, false];
     }
 
     // ── Two-tier cache: file → transient → generate ─────────────────
@@ -1193,6 +1261,7 @@ final class SitemapRouter
 
     private function serveXsl(): void
     {
+        $this->cleanOutputBuffer();
         \header('Content-Type: text/xsl; charset=UTF-8');
         \header('Cache-Control: public, max-age=86400');
         \header('X-Robots-Tag: noindex');
@@ -1215,7 +1284,7 @@ final class SitemapRouter
         }
 
         // Strip characters illegal in XML 1.0
-        $value = \preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', '', $value);
+        $value = \preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', '', $value) ?? '';
         return \esc_html($value);
     }
 
@@ -1223,6 +1292,8 @@ final class SitemapRouter
 
     private function sendXml(string $xml): void
     {
+        $this->cleanOutputBuffer();
+
         $etag = '"' . \md5($xml) . '"';
 
         \header('Content-Type: application/xml; charset=UTF-8');
@@ -1237,5 +1308,20 @@ final class SitemapRouter
         }
 
         echo $xml;
+    }
+
+    /**
+     * Discard any output generated before the sitemap handler.
+     *
+     * Stray output from plugins, themes, or PHP notices would corrupt
+     * the XML response and cause browsers to render it as invisible HTML.
+     */
+    private function cleanOutputBuffer(): void
+    {
+        if (! \headers_sent()) {
+            while (\ob_get_level() > 0) {
+                \ob_end_clean();
+            }
+        }
     }
 }

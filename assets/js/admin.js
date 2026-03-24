@@ -17,7 +17,7 @@
         $notice
             .removeClass('notice-success notice-error hidden')
             .addClass('notice-' + type)
-            .html('<p>' + text + '</p>')
+            .empty().append($('<p>').text(text))
             .show();
         setTimeout(function () { $notice.fadeOut(); }, 4000);
     }

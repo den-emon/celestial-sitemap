@@ -16,6 +16,9 @@ if (! defined('ABSPATH')) {
  *  - Rank Math
  *  - All in One SEO
  *  - SEOPress
+ *  - Google XML Sitemaps (Arne Brachhold)
+ *  - XML Sitemap & Google News
+ *  - Jetpack (Sitemaps module)
  *
  * Detection uses function_exists(), defined(), and class_exists()
  * with autoload disabled to avoid fatal errors.
@@ -77,6 +80,23 @@ final class ConflictDetector
         // SEOPress
         if (defined('SEOPRESS_VERSION') || function_exists('seopress_init')) {
             $conflicts[] = 'SEOPress';
+        }
+
+        // Google XML Sitemaps (Arne Brachhold / google-sitemap-generator)
+        if (defined('SM_VERSION') || class_exists('GoogleSitemapGenerator', false)) {
+            $conflicts[] = 'Google XML Sitemaps';
+        }
+
+        // XML Sitemap & Google News
+        if (class_exists('XMLSF_Sitemaps', false)) {
+            $conflicts[] = 'XML Sitemap & Google News';
+        }
+
+        // Jetpack (Sitemaps module)
+        if (class_exists('Jetpack', false) && method_exists('Jetpack', 'is_module_active')) {
+            if (\Jetpack::is_module_active('sitemaps')) {
+                $conflicts[] = 'Jetpack Sitemaps';
+            }
         }
 
         return $conflicts;

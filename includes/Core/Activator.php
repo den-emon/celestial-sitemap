@@ -111,10 +111,10 @@ final class Activator
 
     private static function addRewriteRules(): void
     {
-        add_rewrite_rule('^cel-sitemap\.xml$', 'index.php?cel_sitemap=index', 'top');
-        add_rewrite_rule('^cel-sitemap-([a-z0-9_-]+?)-(\d+)\.xml$', 'index.php?cel_sitemap=$matches[1]&cel_sitemap_page=$matches[2]', 'top');
-        add_rewrite_rule('^cel-sitemap-([a-z0-9_-]+?)\.xml$', 'index.php?cel_sitemap=$matches[1]', 'top');
-        add_rewrite_rule('^cel-sitemap\.xsl$', 'index.php?cel_xsl=1', 'top');
+        add_rewrite_rule('^cel-sitemap\.xml/?$', 'index.php?cel_sitemap=index', 'top');
+        add_rewrite_rule('^cel-sitemap-([a-z0-9_-]+?)-(\d+)\.xml/?$', 'index.php?cel_sitemap=$matches[1]&cel_sitemap_page=$matches[2]', 'top');
+        add_rewrite_rule('^cel-sitemap-([a-z0-9_-]+?)\.xml/?$', 'index.php?cel_sitemap=$matches[1]', 'top');
+        add_rewrite_rule('^cel-sitemap\.xsl/?$', 'index.php?cel_xsl=1', 'top');
     }
 
     /**

@@ -271,6 +271,7 @@ final class Options
         }
 
         if (! function_exists('openssl_encrypt')) {
+            error_log('Celestial Sitemap: openssl extension is not available — credentials will be stored without encryption.');
             return $plaintext;
         }
 
@@ -280,6 +281,7 @@ final class Options
         $cipher = openssl_encrypt($plaintext, self::CIPHER_ALGO, $key, OPENSSL_RAW_DATA, $iv);
 
         if ($cipher === false) {
+            error_log('Celestial Sitemap: openssl_encrypt() failed — credentials will be stored without encryption.');
             return $plaintext;
         }
 

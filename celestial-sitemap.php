@@ -2,11 +2,11 @@
 /**
  * Plugin Name: Celestial Sitemap
  * Description: Enterprise-grade WordPress SEO plugin — title/meta/canonical/OGP/Schema/Sitemap/Redirect/404 log.
- * Version: 3.5.1
+ * Version: 3.5.2
  * Requires at least: 6.0
  * Tested up to: 6.7
  * Requires PHP: 8.1
- * Author: Ikkido (一揆堂無門)
+ * Author: Ikkido-den (一揆堂田)
  * License: GPL v2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  * Text Domain: celestial-sitemap
@@ -20,7 +20,7 @@ if (! defined('ABSPATH')) {
 }
 
 // ── Constants ────────────────────────────────────────────────────────
-define('CEL_VERSION', '3.5.1');
+define('CEL_VERSION', '3.5.2');
 define('CEL_FILE', __FILE__);
 define('CEL_DIR', plugin_dir_path(__FILE__));
 define('CEL_URL', plugin_dir_url(__FILE__));
