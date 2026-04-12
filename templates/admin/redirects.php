@@ -29,6 +29,16 @@ if (! defined('ABSPATH')) {
                 <td><input type="url" id="cel-redir-target" class="regular-text" placeholder="https://example.com/new-page/" /></td>
             </tr>
             <tr>
+                <th><label for="cel-redir-match-type"><?php esc_html_e('Match Type', 'celestial-sitemap'); ?></label></th>
+                <td>
+                    <select id="cel-redir-match-type">
+                        <option value="exact"><?php esc_html_e('Exact', 'celestial-sitemap'); ?></option>
+                        <option value="prefix"><?php esc_html_e('Prefix', 'celestial-sitemap'); ?></option>
+                        <option value="regex"><?php esc_html_e('Regex', 'celestial-sitemap'); ?></option>
+                    </select>
+                </td>
+            </tr>
+            <tr>
                 <th><label for="cel-redir-code"><?php esc_html_e('Status Code', 'celestial-sitemap'); ?></label></th>
                 <td>
                     <select id="cel-redir-code">
@@ -52,6 +62,7 @@ if (! defined('ABSPATH')) {
                 <thead>
                     <tr>
                         <th><?php esc_html_e('Source', 'celestial-sitemap'); ?></th>
+                        <th><?php esc_html_e('Match Type', 'celestial-sitemap'); ?></th>
                         <th><?php esc_html_e('Target', 'celestial-sitemap'); ?></th>
                         <th><?php esc_html_e('Code', 'celestial-sitemap'); ?></th>
                         <th><?php esc_html_e('Hits', 'celestial-sitemap'); ?></th>
@@ -63,6 +74,7 @@ if (! defined('ABSPATH')) {
                     <?php foreach ($redirects as $r) : ?>
                     <tr data-id="<?php echo esc_attr((string) $r->id); ?>">
                         <td><?php echo esc_html($r->source_url); ?></td>
+                        <td><?php echo esc_html(ucfirst((string) ($r->match_type ?? 'exact'))); ?></td>
                         <td><a href="<?php echo esc_url($r->target_url); ?>" target="_blank"><?php echo esc_html($r->target_url); ?></a></td>
                         <td><?php echo esc_html((string) $r->status_code); ?></td>
                         <td><?php echo esc_html(number_format_i18n((int) $r->hit_count)); ?></td>

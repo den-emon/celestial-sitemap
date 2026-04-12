@@ -66,7 +66,12 @@ final class AdminController
 
     public function enqueueAssets(string $hook): void
     {
-        $adminPages = ['toplevel_page_cel-dashboard', 'celestial-sitemap_page_cel-redirects', 'celestial-sitemap_page_cel-404-log', 'celestial-sitemap_page_cel-robots-txt'];
+        $adminPages = [
+            'toplevel_page_cel-dashboard',
+            'cel-dashboard_page_cel-redirects',
+            'cel-dashboard_page_cel-404-log',
+            'cel-dashboard_page_cel-robots-txt',
+        ];
 
         $needsCss = in_array($hook, $adminPages, true)
             || $hook === 'post.php'
@@ -446,6 +451,7 @@ final class AdminController
         $source = sanitize_text_field(wp_unslash($_POST['source'] ?? ''));
         $target = esc_url_raw(wp_unslash($_POST['target'] ?? ''));
         $code   = absint($_POST['status_code'] ?? 301);
+        $matchType = sanitize_key(wp_unslash($_POST['match_type'] ?? 'exact'));
 
         if ($source === '' || $target === '') {
             wp_send_json_error(['message' => __('Source and target are required.', 'celestial-sitemap')]);
@@ -455,7 +461,7 @@ final class AdminController
         }
 
         try {
-            $ok = RedirectManager::add($source, $target, $code);
+            $ok = RedirectManager::add($source, $target, $code, $matchType);
         } catch (\InvalidArgumentException $e) {
             wp_send_json_error(['message' => $e->getMessage()]);
             return;

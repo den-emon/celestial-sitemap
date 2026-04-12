@@ -54,11 +54,6 @@ final class NotFoundLogger
         $referrer  = esc_url_raw(wp_get_referer() ?: '');
         $userAgent = sanitize_text_field(wp_unslash($_SERVER['HTTP_USER_AGENT'] ?? ''));
 
-        // Check table cap before inserting
-        if ($this->isTableFull()) {
-            return;
-        }
-
         // Rate limit: only throttle genuinely new URLs.
         // Check if this URL already exists (upserts are always allowed).
         $exists = $wpdb->get_var($wpdb->prepare(
@@ -66,12 +61,19 @@ final class NotFoundLogger
             $url
         ));
 
-        if (! $exists && ! $this->acquireRateSlot()) {
-            return; // Rate limit exceeded for new URLs
+        if (! $exists) {
+            // Check table cap before inserting a new URL.
+            if ($this->isTableFull()) {
+                return;
+            }
+
+            if (! $this->acquireRateSlot()) {
+                return; // Rate limit exceeded for new URLs
+            }
         }
 
         // Upsert: insert or increment
-        $wpdb->query($wpdb->prepare(
+        $result = $wpdb->query($wpdb->prepare(
             "INSERT INTO {$wpdb->prefix}cel_404_log (url, referrer, user_agent, hit_count, first_seen, last_seen)
              VALUES (%s, %s, %s, 1, NOW(), NOW())
              ON DUPLICATE KEY UPDATE
@@ -83,6 +85,10 @@ final class NotFoundLogger
             $referrer,
             mb_substr($userAgent, 0, 512)
         ));
+
+        if ($result !== false && ! $exists) {
+            delete_transient('cel_404_row_count');
+        }
     }
 
     /**

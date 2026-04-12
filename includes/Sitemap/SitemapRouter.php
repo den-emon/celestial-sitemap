@@ -180,32 +180,97 @@ final class SitemapRouter
      */
     private function serveSitemap(string $type, int $page): void
     {
-        if ($type === 'index') {
-            $xml = $this->getCachedOrGenerate('idx', fn() => $this->buildIndex());
-        } elseif ($type === 'news') {
-            $xml = $this->getCachedOrGenerate('news', fn() => $this->buildNewsSitemap());
-        } elseif ($type === 'video') {
-            $xml = $this->getCachedOrGenerate("video_p{$page}", fn() => $this->buildVideoSitemap($page));
-        } elseif ($type === 'image') {
-            $xml = $this->getCachedOrGenerate("image_p{$page}", fn() => $this->buildImageSitemap($page));
-        } else {
-            $xml = $this->getCachedOrGenerate("{$type}_p{$page}", fn() => $this->buildSitemap($type, $page));
-        }
-
-        if ($xml === '') {
-            $this->cleanOutputBuffer();
-            \status_header(200);
-            \header('Content-Type: application/xml; charset=UTF-8');
-            \header('Cache-Control: public, max-age=3600');
-            \header('X-Robots-Tag: noindex');
-            \header('X-Content-Type-Options: nosniff');
-            echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n"
-                . '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>';
-            exit;
-        }
-
-        $this->sendXml($xml);
+        $response = $this->resolveSitemapResponse($type, $page);
+        $this->sendXml($response['xml'], $response['status']);
         exit;
+    }
+
+    /**
+     * @return array{status: int, xml: string}
+     */
+    private function resolveSitemapResponse(string $type, int $page): array
+    {
+        $xml = $this->resolveSitemapXml($type, $page);
+        if ($xml === '') {
+            return [
+                'status' => 404,
+                'xml'    => $this->buildEmptySitemapXml(),
+            ];
+        }
+
+        return [
+            'status' => 200,
+            'xml'    => $xml,
+        ];
+    }
+
+    private function resolveSitemapXml(string $type, int $page): string
+    {
+        if (! $this->isValidSitemapRequest($type, $page)) {
+            return '';
+        }
+
+        if ($type === 'index') {
+            return $this->getCachedOrGenerate('idx', fn() => $this->buildIndex());
+        }
+
+        if ($type === 'news') {
+            return $this->getCachedOrGenerate('news', fn() => $this->buildNewsSitemap());
+        }
+
+        if ($type === 'video') {
+            return $this->getCachedOrGenerate("video_p{$page}", fn() => $this->buildVideoSitemap($page));
+        }
+
+        if ($type === 'image') {
+            return $this->getCachedOrGenerate("image_p{$page}", fn() => $this->buildImageSitemap($page));
+        }
+
+        return $this->getCachedOrGenerate("{$type}_p{$page}", fn() => $this->buildSitemap($type, $page));
+    }
+
+    private function isValidSitemapRequest(string $type, int $page): bool
+    {
+        if ($page < 1) {
+            return false;
+        }
+
+        if ($type === 'index' || $type === 'news') {
+            return $page === 1;
+        }
+
+        if ($type === 'video') {
+            return $this->hasSitemapPage($this->countVideoPosts(), $page);
+        }
+
+        if ($type === 'image') {
+            return $this->hasSitemapPage($this->countImagePosts(), $page);
+        }
+
+        if (\post_type_exists($type)) {
+            return $this->hasSitemapPage($this->countPostType($type), $page);
+        }
+
+        if (\taxonomy_exists($type)) {
+            return $this->hasSitemapPage($this->countTaxonomy($type), $page);
+        }
+
+        return false;
+    }
+
+    private function hasSitemapPage(int $count, int $page): bool
+    {
+        if ($count <= 0) {
+            return false;
+        }
+
+        return $page <= (int) \ceil($count / self::MAX_URLS);
+    }
+
+    private function buildEmptySitemapXml(): string
+    {
+        return '<?xml version="1.0" encoding="UTF-8"?>' . "\n"
+            . '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>';
     }
 
     // ── URI-based fallback detection ───────────────────────────────
@@ -365,10 +430,13 @@ final class SitemapRouter
             for ($i = 1; $i <= $chunks; $i++) {
                 $slug    = $chunks > 1 ? "{$pt}-{$i}" : $pt;
                 $lastmod = $this->lastModifiedPostType($pt);
-                $entries[] = [
-                    'loc'     => \home_url("/cel-sitemap-{$slug}.xml"),
-                    'lastmod' => $lastmod,
-                ];
+                $this->maybeAppendIndexEntry(
+                    $entries,
+                    "{$pt}_p{$i}",
+                    fn() => $this->buildSitemap($pt, $i),
+                    \home_url("/cel-sitemap-{$slug}.xml"),
+                    $lastmod
+                );
             }
         }
 
@@ -377,10 +445,17 @@ final class SitemapRouter
             if ($count === 0) {
                 continue;
             }
-            $entries[] = [
-                'loc'     => \home_url("/cel-sitemap-{$tax}.xml"),
-                'lastmod' => \gmdate('c'),
-            ];
+            $chunks = (int) \ceil($count / self::MAX_URLS);
+            for ($i = 1; $i <= $chunks; $i++) {
+                $slug = $chunks > 1 ? "{$tax}-{$i}" : $tax;
+                $this->maybeAppendIndexEntry(
+                    $entries,
+                    "{$tax}_p{$i}",
+                    fn() => $this->buildSitemap($tax, $i),
+                    \home_url("/cel-sitemap-{$slug}.xml"),
+                    \gmdate('c')
+                );
+            }
         }
 
         // News sitemap — always listed in the index so crawlers can
@@ -396,10 +471,13 @@ final class SitemapRouter
             $chunks = (int) \ceil($imageCount / self::MAX_URLS);
             for ($i = 1; $i <= $chunks; $i++) {
                 $slug = $chunks > 1 ? "image-{$i}" : 'image';
-                $entries[] = [
-                    'loc'     => \home_url("/cel-sitemap-{$slug}.xml"),
-                    'lastmod' => \gmdate('c'),
-                ];
+                $this->maybeAppendIndexEntry(
+                    $entries,
+                    "image_p{$i}",
+                    fn() => $this->buildImageSitemap($i),
+                    \home_url("/cel-sitemap-{$slug}.xml"),
+                    \gmdate('c')
+                );
             }
         }
 
@@ -409,10 +487,13 @@ final class SitemapRouter
             $chunks = (int) \ceil($videoCount / self::MAX_URLS);
             for ($i = 1; $i <= $chunks; $i++) {
                 $slug = $chunks > 1 ? "video-{$i}" : 'video';
-                $entries[] = [
-                    'loc'     => \home_url("/cel-sitemap-{$slug}.xml"),
-                    'lastmod' => \gmdate('c'),
-                ];
+                $this->maybeAppendIndexEntry(
+                    $entries,
+                    "video_p{$i}",
+                    fn() => $this->buildVideoSitemap($i),
+                    \home_url("/cel-sitemap-{$slug}.xml"),
+                    \gmdate('c')
+                );
             }
         }
 
@@ -435,6 +516,22 @@ final class SitemapRouter
         return $xml;
     }
 
+    /**
+     * @param array<int, array{loc: string, lastmod: string}> $entries
+     */
+    private function maybeAppendIndexEntry(array &$entries, string $cacheSuffix, callable $builder, string $loc, string $lastmod): void
+    {
+        $xml = $this->getCachedOrGenerate($cacheSuffix, $builder);
+        if ($xml === '') {
+            return;
+        }
+
+        $entries[] = [
+            'loc'     => $loc,
+            'lastmod' => $lastmod,
+        ];
+    }
+
     // ── Per-type sitemap builder ────────────────────────────────────
 
     private function buildSitemap(string $type, int $page): string
@@ -446,6 +543,10 @@ final class SitemapRouter
         } elseif (\taxonomy_exists($type)) {
             $urls = $this->getTaxonomyUrls($type, self::MAX_URLS, $offset);
         } else {
+            return '';
+        }
+
+        if (empty($urls)) {
             return '';
         }
 
@@ -681,9 +782,14 @@ final class SitemapRouter
         global $wpdb;
 
         $ids = (array) $wpdb->get_col($wpdb->prepare(
-            "SELECT ID FROM {$wpdb->posts}
-             WHERE post_type = %s AND post_status = 'publish'
-             ORDER BY post_modified_gmt DESC
+            "SELECT p.ID FROM {$wpdb->posts} p
+             LEFT JOIN {$wpdb->postmeta} noidx
+               ON p.ID = noidx.post_id
+              AND noidx.meta_key = '_cel_noindex'
+              AND noidx.meta_value = '1'
+             WHERE p.post_type = %s AND p.post_status = 'publish'
+               AND noidx.post_id IS NULL
+             ORDER BY p.post_modified_gmt DESC
              LIMIT %d OFFSET %d",
             $postType,
             $limit,
@@ -691,7 +797,19 @@ final class SitemapRouter
         ));
 
         if (empty($ids)) {
-            return [];
+            $fallbackIds = (array) $wpdb->get_col($wpdb->prepare(
+                "SELECT ID FROM {$wpdb->posts}
+                 WHERE post_type = 'post' AND post_status = 'publish'
+                 ORDER BY post_date_gmt DESC
+                 LIMIT %d",
+                1
+            ));
+
+            if (empty($fallbackIds)) {
+                return [];
+            }
+
+            $ids = $fallbackIds;
         }
 
         $intIds = \array_map('intval', $ids);
@@ -802,12 +920,7 @@ final class SitemapRouter
      */
     private function getTaxonomyUrls(string $taxonomy, int $limit, int $offset): array
     {
-        $terms = \get_terms([
-            'taxonomy'   => $taxonomy,
-            'hide_empty' => true,
-            'number'     => $limit,
-            'offset'     => $offset,
-        ]);
+        $terms = \get_terms($this->taxonomyQueryArgs($taxonomy, $limit, $offset));
 
         if (\is_wp_error($terms) || ! \is_array($terms)) {
             return [];
@@ -855,16 +968,15 @@ final class SitemapRouter
             self::NEWS_MAX_URLS
         ));
 
-        // Fallback: when no posts exist within the time window,
-        // fetch the single most recent published post so the sitemap
-        // is never completely empty.
         if (empty($ids)) {
-            $ids = (array) $wpdb->get_col(
+            $ids = (array) $wpdb->get_col($wpdb->prepare(
                 "SELECT ID FROM {$wpdb->posts}
                  WHERE post_type = 'post' AND post_status = 'publish'
                  ORDER BY post_date_gmt DESC
-                 LIMIT 1"
-            );
+                 LIMIT %d",
+                1
+            ));
+
             if (empty($ids)) {
                 return [];
             }
@@ -937,7 +1049,12 @@ final class SitemapRouter
         // then filter by content pattern. The LIKE is applied after index narrowing.
         $ids = (array) $wpdb->get_col($wpdb->prepare(
             "SELECT ID FROM {$wpdb->posts}
+             LEFT JOIN {$wpdb->postmeta} noidx
+               ON {$wpdb->posts}.ID = noidx.post_id
+              AND noidx.meta_key = '_cel_noindex'
+              AND noidx.meta_value = '1'
              WHERE post_type IN ({$placeholders}) AND post_status = 'publish'
+             AND noidx.post_id IS NULL
              AND (post_content LIKE '%%youtube.com%%' OR post_content LIKE '%%youtu.be%%')
              ORDER BY post_modified_gmt DESC
              LIMIT %d OFFSET %d",
@@ -1054,8 +1171,13 @@ final class SitemapRouter
         $ids = (array) $wpdb->get_col($wpdb->prepare(
             "SELECT p.ID FROM {$wpdb->posts} p
              INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id AND pm.meta_key = '_thumbnail_id'
+             LEFT JOIN {$wpdb->postmeta} noidx
+               ON p.ID = noidx.post_id
+              AND noidx.meta_key = '_cel_noindex'
+              AND noidx.meta_value = '1'
              WHERE p.post_type IN ({$placeholders}) AND p.post_status = 'publish'
              AND pm.meta_value > 0
+             AND noidx.post_id IS NULL
              ORDER BY p.post_modified_gmt DESC
              LIMIT %d OFFSET %d",
             ...$args
@@ -1115,10 +1237,15 @@ final class SitemapRouter
         $placeholders = \implode(',', \array_fill(0, \count($postTypes), '%s'));
 
         return (int) $wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(*) FROM {$wpdb->posts} p
+            "SELECT COUNT(DISTINCT p.ID) FROM {$wpdb->posts} p
              INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id AND pm.meta_key = '_thumbnail_id'
+             LEFT JOIN {$wpdb->postmeta} noidx
+               ON p.ID = noidx.post_id
+              AND noidx.meta_key = '_cel_noindex'
+              AND noidx.meta_value = '1'
              WHERE p.post_type IN ({$placeholders}) AND p.post_status = 'publish'
-             AND pm.meta_value > 0",
+             AND pm.meta_value > 0
+             AND noidx.post_id IS NULL",
             ...$postTypes
         ));
     }
@@ -1127,14 +1254,24 @@ final class SitemapRouter
 
     private function countPostType(string $pt): int
     {
-        $counts = \wp_count_posts($pt);
-        return (int) ($counts->publish ?? 0);
+        global $wpdb;
+
+        return (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM {$wpdb->posts} p
+             LEFT JOIN {$wpdb->postmeta} noidx
+               ON p.ID = noidx.post_id
+              AND noidx.meta_key = '_cel_noindex'
+              AND noidx.meta_value = '1'
+             WHERE p.post_type = %s AND p.post_status = 'publish'
+               AND noidx.post_id IS NULL",
+            $pt
+        ));
     }
 
     private function countTaxonomy(string $tax): int
     {
-        $result = \wp_count_terms(['taxonomy' => $tax, 'hide_empty' => true]);
-        return \is_wp_error($result) ? 0 : (int) $result;
+        $result = \get_terms($this->taxonomyQueryArgs($tax, 0, 0, 'ids'));
+        return \is_wp_error($result) || ! \is_array($result) ? 0 : \count($result);
     }
 
     private function countRecentPosts(int $maxAgeHours): int
@@ -1162,7 +1299,12 @@ final class SitemapRouter
 
         return (int) $wpdb->get_var($wpdb->prepare(
             "SELECT COUNT(*) FROM {$wpdb->posts}
+             LEFT JOIN {$wpdb->postmeta} noidx
+               ON {$wpdb->posts}.ID = noidx.post_id
+              AND noidx.meta_key = '_cel_noindex'
+              AND noidx.meta_value = '1'
              WHERE post_type IN ({$placeholders}) AND post_status = 'publish'
+             AND noidx.post_id IS NULL
              AND (post_content LIKE '%%youtube.com%%' OR post_content LIKE '%%youtu.be%%')",
             ...$postTypes
         ));
@@ -1172,13 +1314,44 @@ final class SitemapRouter
     {
         global $wpdb;
         $ts = $wpdb->get_var($wpdb->prepare(
-            "SELECT post_modified_gmt FROM {$wpdb->posts}
-             WHERE post_type = %s AND post_status = 'publish'
-             ORDER BY post_modified_gmt DESC LIMIT 1",
+            "SELECT p.post_modified_gmt FROM {$wpdb->posts} p
+             LEFT JOIN {$wpdb->postmeta} noidx
+               ON p.ID = noidx.post_id
+              AND noidx.meta_key = '_cel_noindex'
+              AND noidx.meta_value = '1'
+             WHERE p.post_type = %s AND p.post_status = 'publish'
+               AND noidx.post_id IS NULL
+             ORDER BY p.post_modified_gmt DESC LIMIT 1",
             $pt
         ));
         $timestamp = $ts ? \strtotime($ts) : false;
         return $timestamp ? \gmdate('c', $timestamp) : \gmdate('c');
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function taxonomyQueryArgs(string $taxonomy, int $number = 0, int $offset = 0, string $fields = 'all'): array
+    {
+        return [
+            'taxonomy'   => $taxonomy,
+            'hide_empty' => true,
+            'number'     => $number,
+            'offset'     => $offset,
+            'fields'     => $fields,
+            'meta_query' => [
+                'relation' => 'OR',
+                [
+                    'key'     => '_cel_noindex',
+                    'compare' => 'NOT EXISTS',
+                ],
+                [
+                    'key'     => '_cel_noindex',
+                    'value'   => '1',
+                    'compare' => '!=',
+                ],
+            ],
+        ];
     }
 
     // ── Cache invalidation + pre-generation ─────────────────────────
@@ -1241,7 +1414,10 @@ final class SitemapRouter
             if ($count === 0) {
                 continue;
             }
-            $this->getCachedOrGenerate("{$tax}_p1", fn() => $this->buildSitemap($tax, 1));
+            $chunks = (int) \ceil($count / self::MAX_URLS);
+            for ($i = 1; $i <= $chunks; $i++) {
+                $this->getCachedOrGenerate("{$tax}_p{$i}", fn() => $this->buildSitemap($tax, $i));
+            }
         }
 
         // Generate news sitemap (always, even when empty)
@@ -1299,22 +1475,24 @@ final class SitemapRouter
 
     // ── XML output ───────────────────────────────────────────────────
 
-    private function sendXml(string $xml): void
+    private function sendXml(string $xml, int $status = 200): void
     {
         $this->cleanOutputBuffer();
 
-        $etag = '"' . \md5($xml) . '"';
-
-        \status_header(200);
+        \status_header($status);
         \header('Content-Type: application/xml; charset=UTF-8');
         \header('Cache-Control: public, max-age=3600');
         \header('X-Robots-Tag: noindex');
         \header('X-Content-Type-Options: nosniff');
-        \header('ETag: ' . $etag);
 
-        if (isset($_SERVER['HTTP_IF_NONE_MATCH']) && \trim($_SERVER['HTTP_IF_NONE_MATCH']) === $etag) {
-            \status_header(304);
-            return;
+        if ($status === 200) {
+            $etag = '"' . \md5($xml) . '"';
+            \header('ETag: ' . $etag);
+
+            if (isset($_SERVER['HTTP_IF_NONE_MATCH']) && \trim($_SERVER['HTTP_IF_NONE_MATCH']) === $etag) {
+                \status_header(304);
+                return;
+            }
         }
 
         echo $xml;

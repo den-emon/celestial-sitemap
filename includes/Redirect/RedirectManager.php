@@ -26,7 +26,8 @@ if (! defined('ABSPATH')) {
  * Prefix rules are sorted by source length (longest first) for correct matching.
  * The compiled map is rebuilt when redirect rules change (add/delete).
  *
- * For tables > CACHE_LIMIT, falls back to direct indexed DB queries.
+ * For tables > CACHE_LIMIT, falls back to direct DB lookups that still
+ * preserve exact/prefix/regex behavior without building the full map.
  */
 final class RedirectManager
 {
@@ -85,7 +86,7 @@ final class RedirectManager
             return $this->matchCompiledMap($map, $path);
         }
 
-        // Large table: direct DB lookup (exact only; prefix/regex require full scan)
+        // Large table: direct DB lookup without building the in-memory map.
         return $this->findViaDirect($path);
     }
 
@@ -164,30 +165,15 @@ final class RedirectManager
         // 2. Prefix match (longest-prefix-first)
         foreach ($map['prefix'] as $rule) {
             if (str_starts_with($path, $rule['source'])) {
-                $remainder = substr($path, strlen($rule['source']));
-                $targetUrl = rtrim($rule['target_url'], '/') . '/' . ltrim($remainder, '/');
-                return [
-                    'id'          => $rule['id'],
-                    'target_url'  => $targetUrl,
-                    'status_code' => $rule['status_code'],
-                ];
+                return $this->buildPrefixMatch($rule, $path);
             }
         }
 
         // 3. Regex match
         foreach ($map['regex'] as $rule) {
-            $pattern = '#' . str_replace('#', '\\#', $rule['pattern']) . '#';
-            if (@preg_match($pattern, $path, $matches)) {
-                // Substitute backreferences ($1, $2, ...) in target URL
-                $targetUrl = $rule['target_url'];
-                for ($i = 1; $i < count($matches); $i++) {
-                    $targetUrl = str_replace('$' . $i, $matches[$i], $targetUrl);
-                }
-                return [
-                    'id'          => $rule['id'],
-                    'target_url'  => $targetUrl,
-                    'status_code' => $rule['status_code'],
-                ];
+            $match = $this->buildRegexMatch($rule, $path);
+            if ($match !== null) {
+                return $match;
             }
         }
 
@@ -195,21 +181,26 @@ final class RedirectManager
     }
 
     /**
-     * Direct indexed DB lookup for large tables (exact match only).
+     * Direct DB lookup for large tables.
+     *
+     * Exact matches stay indexed. Prefix matches use a single SQL query that
+     * returns the longest matching prefix rule. Regex rules are fetched as a
+     * much smaller subset than the full redirect table and evaluated in PHP.
      */
     private function findViaDirect(string $path): ?array
     {
         global $wpdb;
 
-        $row = $wpdb->get_row($wpdb->prepare(
-            "SELECT id, target_url, status_code FROM {$wpdb->prefix}cel_redirects
-             WHERE source_url = %s AND (match_type = 'exact' OR match_type IS NULL)
-             LIMIT 1",
-            $path
-        ), ARRAY_A);
+        $hasMatchType = self::hasMatchTypeColumn();
 
-        if (! $row) {
-            // Fallback: try without match_type filter (column may not exist yet)
+        if ($hasMatchType) {
+            $row = $wpdb->get_row($wpdb->prepare(
+                "SELECT id, target_url, status_code FROM {$wpdb->prefix}cel_redirects
+                 WHERE source_url = %s AND (match_type = 'exact' OR match_type IS NULL)
+                 LIMIT 1",
+                $path
+            ), ARRAY_A);
+        } else {
             $row = $wpdb->get_row($wpdb->prepare(
                 "SELECT id, target_url, status_code FROM {$wpdb->prefix}cel_redirects
                  WHERE source_url = %s LIMIT 1",
@@ -217,14 +208,93 @@ final class RedirectManager
             ), ARRAY_A);
         }
 
-        if (! $row) {
+        if ($row) {
+            return [
+                'id'          => (int) $row['id'],
+                'target_url'  => $row['target_url'],
+                'status_code' => (int) $row['status_code'],
+            ];
+        }
+
+        if (! $hasMatchType) {
             return null;
         }
 
+        $prefixRule = $wpdb->get_row($wpdb->prepare(
+            "SELECT id, source_url, target_url, status_code FROM {$wpdb->prefix}cel_redirects
+             WHERE match_type = 'prefix' AND %s LIKE CONCAT(source_url, '%%')
+             ORDER BY CHAR_LENGTH(source_url) DESC, id ASC
+             LIMIT 1",
+            $path
+        ), ARRAY_A);
+
+        if (is_array($prefixRule)) {
+            return $this->buildPrefixMatch($prefixRule, $path);
+        }
+
+        $regexRules = $wpdb->get_results(
+            "SELECT id, source_url, target_url, status_code FROM {$wpdb->prefix}cel_redirects
+             WHERE match_type = 'regex'
+             ORDER BY id ASC",
+            ARRAY_A
+        );
+
+        if (! is_array($regexRules)) {
+            return null;
+        }
+
+        foreach ($regexRules as $rule) {
+            $rule['pattern'] = $rule['source_url'] ?? '';
+
+            $match = $this->buildRegexMatch($rule, $path);
+            if ($match !== null) {
+                return $match;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array{id:int, source:string, target_url:string, status_code:int}|array{id:int, source_url:string, target_url:string, status_code:int} $rule
+     * @return array{id:int, target_url:string, status_code:int}
+     */
+    private function buildPrefixMatch(array $rule, string $path): array
+    {
+        $source    = (string) ($rule['source'] ?? $rule['source_url'] ?? '');
+        $remainder = substr($path, strlen($source));
+        $targetUrl = rtrim((string) $rule['target_url'], '/') . '/' . ltrim($remainder, '/');
+
         return [
-            'id'          => (int) $row['id'],
-            'target_url'  => $row['target_url'],
-            'status_code' => (int) $row['status_code'],
+            'id'          => (int) $rule['id'],
+            'target_url'  => $targetUrl,
+            'status_code' => (int) $rule['status_code'],
+        ];
+    }
+
+    /**
+     * @param array{id:int, pattern:string, target_url:string, status_code:int}|array{id:int, source_url:string, target_url:string, status_code:int} $rule
+     * @return array{id:int, target_url:string, status_code:int}|null
+     */
+    private function buildRegexMatch(array $rule, string $path): ?array
+    {
+        $pattern = (string) ($rule['pattern'] ?? $rule['source_url'] ?? '');
+        $pattern = '#' . str_replace('#', '\\#', $pattern) . '#';
+
+        if (! @preg_match($pattern, $path, $matches)) {
+            return null;
+        }
+
+        // Substitute backreferences ($1, $2, ...) in target URL.
+        $targetUrl = (string) $rule['target_url'];
+        for ($i = 1; $i < count($matches); $i++) {
+            $targetUrl = str_replace('$' . $i, $matches[$i], $targetUrl);
+        }
+
+        return [
+            'id'          => (int) $rule['id'],
+            'target_url'  => $targetUrl,
+            'status_code' => (int) $rule['status_code'],
         ];
     }
 
@@ -299,20 +369,6 @@ final class RedirectManager
             }
         }
 
-        // Normalise target path for comparison (exact only)
-        if ($matchType === 'exact') {
-            $targetPath = wp_parse_url($target, PHP_URL_PATH);
-            $targetNorm = $targetPath !== null && $targetPath !== false
-                ? rtrim($targetPath, '/') . '/'
-                : '';
-
-            if ($targetNorm === $source) {
-                throw new \InvalidArgumentException(
-                    __('Source and target resolve to the same URL.', 'celestial-sitemap')
-                );
-            }
-        }
-
         // Reject duplicate source
         global $wpdb;
         $exists = $wpdb->get_var($wpdb->prepare(
@@ -325,25 +381,7 @@ final class RedirectManager
             );
         }
 
-        // Detect simple loop (exact only)
-        if ($matchType === 'exact') {
-            $targetNorm = $targetNorm ?? '';
-            $loopTarget = $wpdb->get_var($wpdb->prepare(
-                "SELECT target_url FROM {$wpdb->prefix}cel_redirects WHERE source_url = %s LIMIT 1",
-                $targetNorm
-            ));
-            if ($loopTarget !== null) {
-                $loopTargetPath = wp_parse_url($loopTarget, PHP_URL_PATH);
-                $loopTargetNorm = $loopTargetPath !== null && $loopTargetPath !== false
-                    ? rtrim($loopTargetPath, '/') . '/'
-                    : '';
-                if ($loopTargetNorm === $source) {
-                    throw new \InvalidArgumentException(
-                        __('This redirect would create a loop: the target already redirects back to the source.', 'celestial-sitemap')
-                    );
-                }
-            }
-        }
+        self::assertNoRedirectLoop($source, $target, $matchType);
 
         // Build insert data — handle missing match_type column gracefully
         $insertData = [
@@ -370,6 +408,115 @@ final class RedirectManager
         }
 
         return $result;
+    }
+
+    private static function assertNoRedirectLoop(string $source, string $target, string $matchType): void
+    {
+        $manager = new self();
+
+        foreach (self::buildLoopCheckPaths($source, $matchType) as $path) {
+            $targetPath = $manager->previewRuleTargetPath($source, $target, $matchType, $path);
+            if ($targetPath === null || $targetPath === '') {
+                continue;
+            }
+
+            if ($targetPath === $path) {
+                throw new \InvalidArgumentException(
+                    __('Source and target resolve to the same URL.', 'celestial-sitemap')
+                );
+            }
+
+            $loopTarget = $manager->findRedirect($targetPath);
+            if ($loopTarget !== null && $manager->normalise((string) $loopTarget['target_url']) === $path) {
+                throw new \InvalidArgumentException(
+                    __('This redirect would create a loop: the target already redirects back to the source.', 'celestial-sitemap')
+                );
+            }
+        }
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function buildLoopCheckPaths(string $source, string $matchType): array
+    {
+        if ($matchType === 'exact') {
+            return [$source];
+        }
+
+        if ($matchType === 'prefix') {
+            return [
+                $source,
+                rtrim($source, '/') . '/cel-loop-check/',
+            ];
+        }
+
+        $samplePath = self::buildRegexLoopCheckPath($source);
+
+        return $samplePath !== null ? [$samplePath] : [];
+    }
+
+    private static function buildRegexLoopCheckPath(string $pattern): ?string
+    {
+        $sample = preg_replace('/^\^|\$$/', '', $pattern) ?? $pattern;
+
+        $sample = preg_replace_callback('/\(([^()]+)\)/', static function (array $matches): string {
+            $group = $matches[1];
+
+            if (str_contains($group, '\\d') || str_contains($group, '[0-9]')) {
+                return '123';
+            }
+
+            return 'sample';
+        }, $sample) ?? $sample;
+
+        $sample = preg_replace('/\[[^][]+\]\+?/', 'sample', $sample) ?? $sample;
+        $sample = preg_replace('/\\\\([\/._-])/', '$1', $sample) ?? $sample;
+
+        if ($sample === '' || preg_match('/[\\^$*+?{}\[\]|]/', $sample)) {
+            return null;
+        }
+
+        return rtrim($sample, '/') . '/';
+    }
+
+    private function previewRuleTargetPath(string $source, string $target, string $matchType, string $path): ?string
+    {
+        if ($matchType === 'exact') {
+            if ($path !== $source) {
+                return null;
+            }
+
+            return $this->normalise($target);
+        }
+
+        if ($matchType === 'prefix') {
+            if (! str_starts_with($path, $source)) {
+                return null;
+            }
+
+            $match = $this->buildPrefixMatch([
+                'id'          => 0,
+                'source'      => $source,
+                'target_url'  => $target,
+                'status_code' => 301,
+            ], $path);
+
+            return $this->normalise($match['target_url']);
+        }
+
+        $match = $this->buildRegexMatch([
+            'id'          => 0,
+            'pattern'     => $source,
+            'target_url'  => $target,
+            'status_code' => 301,
+        ], $path);
+
+        if ($match === null) {
+            return null;
+        }
+
+        return $this->normalise($match['target_url']);
     }
 
     public static function delete(int $id): bool

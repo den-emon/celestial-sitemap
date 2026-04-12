@@ -33,8 +33,12 @@ final class TaxonomyFields
         foreach ($taxonomies as $taxonomy) {
             add_action("{$taxonomy}_add_form_fields", [$this, 'renderAddFields']);
             add_action("{$taxonomy}_edit_form_fields", [$this, 'renderEditFields'], 10, 2);
-            add_action("created_{$taxonomy}", [$this, 'saveFields']);
-            add_action("edited_{$taxonomy}", [$this, 'saveFields']);
+            add_action("created_{$taxonomy}", function (int $termId) use ($taxonomy): void {
+                $this->saveFields($termId, $taxonomy, 'manage_terms');
+            });
+            add_action("edited_{$taxonomy}", function (int $termId) use ($taxonomy): void {
+                $this->saveFields($termId, $taxonomy, 'edit_terms');
+            });
         }
     }
 
@@ -126,7 +130,7 @@ final class TaxonomyFields
      *
      * @param int $termId Term ID.
      */
-    public function saveFields(int $termId): void
+    public function saveFields(int $termId, string $taxonomy = 'category', string $capabilityKey = 'manage_terms'): void
     {
         $nonce = isset($_POST[self::NONCE_FIELD])
             ? sanitize_text_field(wp_unslash($_POST[self::NONCE_FIELD]))
@@ -136,7 +140,12 @@ final class TaxonomyFields
             return;
         }
 
-        if (! current_user_can('manage_categories')) {
+        $taxonomyObject = get_taxonomy($taxonomy);
+        $requiredCap = is_object($taxonomyObject) && isset($taxonomyObject->cap->{$capabilityKey})
+            ? (string) $taxonomyObject->cap->{$capabilityKey}
+            : 'manage_categories';
+
+        if (! current_user_can($requiredCap)) {
             return;
         }
 

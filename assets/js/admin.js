@@ -108,6 +108,7 @@
         ajax('cel_add_redirect', {
             source: $('#cel-redir-source').val(),
             target: $('#cel-redir-target').val(),
+            match_type: $('#cel-redir-match-type').val(),
             status_code: $('#cel-redir-code').val()
         }, function () {
             location.reload();

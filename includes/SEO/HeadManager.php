@@ -284,7 +284,8 @@ final class HeadManager
         $og['og:site_name'] = get_bloginfo('name');
 
         if (is_singular()) {
-            $og['og:type']  = 'article';
+            $isArticle      = is_singular('post');
+            $og['og:type']  = $isArticle ? 'article' : 'website';
             $og['og:title'] = wp_get_document_title();
             $og['og:url']   = $canonicalUrl !== '' ? $canonicalUrl : (string) get_permalink();
 
@@ -298,8 +299,10 @@ final class HeadManager
                 $og['og:image'] = $imageUrl;
             }
 
-            $og['article:published_time'] = get_the_date('c');
-            $og['article:modified_time']  = get_the_modified_date('c');
+            if ($isArticle) {
+                $og['article:published_time'] = get_the_date('c');
+                $og['article:modified_time']  = get_the_modified_date('c');
+            }
 
             $og['twitter:card']  = ($imageUrl !== '') ? 'summary_large_image' : 'summary';
             $og['twitter:title'] = $og['og:title'];

@@ -53,6 +53,9 @@ final class CelestialSitemapFakeWpdb
 {
     public string $prefix = 'wp_';
     public string $options = 'wp_options';
+    public string $posts = 'wp_posts';
+    public string $postmeta = 'wp_postmeta';
+    public string $termmeta = 'wp_termmeta';
 
     /** @var array<string, array<int|string, mixed>> */
     private array $tables = [];
@@ -253,6 +256,22 @@ final class CelestialSitemapFakeWpdb
             );
         }
 
+        if ($sql === "SELECT id, source_url, target_url, status_code FROM {$this->prefix}cel_redirects WHERE match_type = 'regex' ORDER BY id ASC") {
+            $rows = array_values(array_filter(
+                $this->tables[$this->prefix . 'cel_redirects'] ?? [],
+                static fn(array $row): bool => ($row['match_type'] ?? 'exact') === 'regex'
+            ));
+
+            usort($rows, static fn(array $a, array $b): int => ((int) $a['id']) <=> ((int) $b['id']));
+
+            return $this->formatRows(array_map(static fn(array $row): array => [
+                'id'          => $row['id'],
+                'source_url'  => $row['source_url'],
+                'target_url'  => $row['target_url'],
+                'status_code' => $row['status_code'],
+            ], $rows), $output);
+        }
+
         return [];
     }
 
@@ -299,6 +318,40 @@ final class CelestialSitemapFakeWpdb
             return null;
         }
 
+        if ($template === "SELECT id, source_url, target_url, status_code FROM {$this->prefix}cel_redirects WHERE match_type = 'prefix' AND %s LIKE CONCAT(source_url, '%%') ORDER BY CHAR_LENGTH(source_url) DESC, id ASC LIMIT 1") {
+            $path = (string) ($args[0] ?? '');
+            $matches = [];
+
+            foreach ($this->tables[$this->prefix . 'cel_redirects'] ?? [] as $row) {
+                if (($row['match_type'] ?? 'exact') !== 'prefix') {
+                    continue;
+                }
+
+                $source = (string) ($row['source_url'] ?? '');
+                if ($source !== '' && str_starts_with($path, $source)) {
+                    $matches[] = [
+                        'id'          => $row['id'],
+                        'source_url'  => $source,
+                        'target_url'  => $row['target_url'],
+                        'status_code' => $row['status_code'],
+                    ];
+                }
+            }
+
+            usort($matches, static function (array $a, array $b): int {
+                $lengthDiff = strlen((string) $b['source_url']) <=> strlen((string) $a['source_url']);
+                if ($lengthDiff !== 0) {
+                    return $lengthDiff;
+                }
+
+                return ((int) $a['id']) <=> ((int) $b['id']);
+            });
+
+            $row = $matches[0] ?? null;
+
+            return $row === null ? null : $this->formatRow($row, $output);
+        }
+
         return null;
     }
 
@@ -307,10 +360,57 @@ final class CelestialSitemapFakeWpdb
      */
     public function get_col(mixed $query): array
     {
-        [, , $sql] = $this->normalizeQuery($query);
+        [$template, $args, $sql] = $this->normalizeQuery($query);
 
         if ($sql === "SHOW COLUMNS FROM {$this->prefix}cel_redirects") {
             return $this->schemas[$this->prefix . 'cel_redirects'] ?? [];
+        }
+
+        if ($template === "SELECT ID FROM {$this->posts} WHERE post_type = 'post' AND post_status = 'publish' AND post_date_gmt >= %s ORDER BY post_date_gmt DESC LIMIT %d") {
+            $cutoff = (string) ($args[0] ?? '');
+            $limit  = (int) ($args[1] ?? 0);
+            $rows   = [];
+
+            foreach ($GLOBALS['cel_test_posts'] as $post) {
+                if (($post->post_type ?? '') !== 'post' || ($post->post_status ?? '') !== 'publish') {
+                    continue;
+                }
+                if (($post->post_date_gmt ?? '') < $cutoff) {
+                    continue;
+                }
+                $rows[] = $post;
+            }
+
+            usort($rows, static fn(object $a, object $b): int => strcmp((string) $b->post_date_gmt, (string) $a->post_date_gmt));
+
+            return array_map(
+                static fn(object $post): int => (int) $post->ID,
+                $limit > 0 ? array_slice($rows, 0, $limit) : $rows
+            );
+        }
+
+        if ($template === "SELECT ID FROM {$this->posts} WHERE post_type = 'post' AND post_status = 'publish' ORDER BY post_date_gmt DESC LIMIT %d") {
+            $limit = (int) ($args[0] ?? 0);
+            $rows = [];
+
+            foreach ($GLOBALS['cel_test_posts'] as $post) {
+                if (($post->post_type ?? '') !== 'post' || ($post->post_status ?? '') !== 'publish') {
+                    continue;
+                }
+
+                $rows[] = $post;
+            }
+
+            usort($rows, static fn(object $a, object $b): int => strcmp((string) $b->post_date_gmt, (string) $a->post_date_gmt));
+
+            if ($rows === []) {
+                return [];
+            }
+
+            return array_map(
+                static fn(object $post): int => (int) $post->ID,
+                $limit > 0 ? array_slice($rows, 0, $limit) : $rows
+            );
         }
 
         return [];
@@ -650,6 +750,19 @@ final class CelestialSitemapFakeWpQuery
     }
 }
 
+final class WP_Error
+{
+    public function __construct(
+        public string $code = '',
+        public string $message = ''
+    ) {
+    }
+}
+
+final class CelestialSitemapAjaxExit extends \RuntimeException
+{
+}
+
 abstract class WP_UnitTestCase extends TestCase
 {
     public static function set_up_before_class(): void
@@ -717,6 +830,25 @@ function celestial_sitemap_test_bootstrap(): void
     $GLOBALS['cel_wp_deactivation_hooks'] = [];
     $GLOBALS['cel_wp_cron'] = [];
     $GLOBALS['cel_last_redirect'] = null;
+    $GLOBALS['cel_wp_enqueued_styles'] = [];
+    $GLOBALS['cel_wp_enqueued_scripts'] = [];
+    $GLOBALS['cel_wp_localized_scripts'] = [];
+    $GLOBALS['cel_test_term_counts'] = [];
+    $GLOBALS['cel_test_terms'] = [];
+    $GLOBALS['cel_test_term_meta'] = [];
+    $GLOBALS['cel_test_posts'] = [];
+    $GLOBALS['cel_test_post_meta'] = [];
+    $GLOBALS['cel_test_taxonomies'] = [];
+    $GLOBALS['cel_test_user_caps'] = [];
+    $GLOBALS['cel_test_conditionals'] = [];
+    $GLOBALS['cel_test_query_vars'] = [];
+    $GLOBALS['cel_test_queried_object'] = null;
+    $GLOBALS['cel_test_current_post'] = null;
+    $GLOBALS['cel_test_current_post_id'] = 0;
+    $GLOBALS['cel_test_document_title'] = '';
+    $GLOBALS['cel_test_registered_post_types'] = [];
+    $GLOBALS['cel_last_json_response'] = null;
+    $GLOBALS['cel_last_status_header'] = null;
 }
 
 function plugin_dir_path(string $file): string
@@ -921,9 +1053,540 @@ function sanitize_text_field(mixed $value): string
     return trim(preg_replace('/[\r\n\t ]+/', ' ', $string) ?? $string);
 }
 
+function sanitize_textarea_field(mixed $value): string
+{
+    $string = is_scalar($value) ? (string) $value : '';
+    $string = str_replace("\r", '', $string);
+
+    return trim(strip_tags($string));
+}
+
+function sanitize_key(string $key): string
+{
+    $key = strtolower($key);
+    return preg_replace('/[^a-z0-9_\-]/', '', $key) ?? '';
+}
+
+function absint(mixed $maybeint): int
+{
+    return abs((int) $maybeint);
+}
+
 function esc_url_raw(string $url): string
 {
     return trim($url);
+}
+
+function esc_url(string $url): string
+{
+    return trim($url);
+}
+
+function esc_html(string $text): string
+{
+    return htmlspecialchars($text, ENT_QUOTES, 'UTF-8');
+}
+
+function esc_attr(string $text): string
+{
+    return htmlspecialchars($text, ENT_QUOTES, 'UTF-8');
+}
+
+function esc_textarea(string $text): string
+{
+    return htmlspecialchars($text, ENT_QUOTES, 'UTF-8');
+}
+
+function checked(mixed $checked, mixed $current = true, bool $display = true): string
+{
+    return (string) $checked === (string) $current ? 'checked="checked"' : '';
+}
+
+function selected(mixed $selected, mixed $current = true, bool $display = true): string
+{
+    return (string) $selected === (string) $current ? 'selected="selected"' : '';
+}
+
+function number_format_i18n(int|float $number, int $decimals = 0): string
+{
+    return number_format($number, $decimals, '.', ',');
+}
+
+function esc_xml(string $text): string
+{
+    return htmlspecialchars($text, ENT_QUOTES | ENT_XML1, 'UTF-8');
+}
+
+function admin_url(string $path = ''): string
+{
+    return 'https://example.org/wp-admin/' . ltrim($path, '/');
+}
+
+function wp_create_nonce(string $action = '-1'): string
+{
+    return 'nonce-' . $action;
+}
+
+function wp_enqueue_style(string $handle, string $src = '', array $deps = [], string|bool|null $ver = false): void
+{
+    $GLOBALS['cel_wp_enqueued_styles'][$handle] = [
+        'src'  => $src,
+        'deps' => $deps,
+        'ver'  => $ver,
+    ];
+}
+
+function wp_enqueue_script(string $handle, string $src = '', array $deps = [], string|bool|null $ver = false, bool $inFooter = false): void
+{
+    $GLOBALS['cel_wp_enqueued_scripts'][$handle] = [
+        'src'       => $src,
+        'deps'      => $deps,
+        'ver'       => $ver,
+        'in_footer' => $inFooter,
+    ];
+}
+
+function wp_localize_script(string $handle, string $objectName, array $l10n): bool
+{
+    $GLOBALS['cel_wp_localized_scripts'][$handle] = [
+        'object_name' => $objectName,
+        'data'        => $l10n,
+    ];
+
+    return true;
+}
+
+function check_ajax_referer(string $action = '-1', string|false $queryArg = false, bool $stop = true): int|false
+{
+    $key = $queryArg ?: '_ajax_nonce';
+    $nonce = $_POST[$key] ?? $_REQUEST[$key] ?? '';
+    $valid = wp_verify_nonce((string) $nonce, $action);
+
+    if (! $valid && $stop) {
+        throw new CelestialSitemapAjaxExit('Invalid AJAX nonce.');
+    }
+
+    return $valid;
+}
+
+function wp_send_json_success(mixed $data = null, int $statusCode = 200): void
+{
+    $GLOBALS['cel_last_json_response'] = [
+        'success'     => true,
+        'data'        => $data,
+        'status_code' => $statusCode,
+    ];
+
+    throw new CelestialSitemapAjaxExit('AJAX success');
+}
+
+function wp_send_json_error(mixed $data = null, int $statusCode = 200): void
+{
+    $GLOBALS['cel_last_json_response'] = [
+        'success'     => false,
+        'data'        => $data,
+        'status_code' => $statusCode,
+    ];
+
+    throw new CelestialSitemapAjaxExit('AJAX error');
+}
+
+function wp_die(string $message = ''): never
+{
+    throw new \RuntimeException($message);
+}
+
+function apply_filters(string $hook, mixed $value, mixed ...$args): mixed
+{
+    if (empty($GLOBALS['cel_wp_filters'][$hook])) {
+        return $value;
+    }
+
+    ksort($GLOBALS['cel_wp_filters'][$hook]);
+
+    foreach ($GLOBALS['cel_wp_filters'][$hook] as $callbacks) {
+        foreach ($callbacks as [$callback, $acceptedArgs]) {
+            $callbackArgs = array_slice([$value, ...$args], 0, $acceptedArgs);
+            $value = $callback(...$callbackArgs);
+        }
+    }
+
+    return $value;
+}
+
+function home_url(string $path = ''): string
+{
+    return 'https://example.org' . ($path !== '' ? $path : '/');
+}
+
+function get_bloginfo(string $show = '', string $filter = 'raw'): string
+{
+    return match ($show) {
+        'name' => 'Example Site',
+        'description' => 'Example Description',
+        default => '',
+    };
+}
+
+function get_locale(): string
+{
+    return 'en_US';
+}
+
+function get_taxonomies(array $args = [], string $output = 'names'): array
+{
+    $taxonomies = $GLOBALS['cel_test_taxonomies'];
+
+    if ($output === 'names') {
+        return array_keys($taxonomies);
+    }
+
+    return array_values($taxonomies);
+}
+
+function get_taxonomy(string $taxonomy): object|false
+{
+    return $GLOBALS['cel_test_taxonomies'][$taxonomy] ?? false;
+}
+
+function post_type_exists(string $postType): bool
+{
+    return in_array($postType, $GLOBALS['cel_test_registered_post_types'], true);
+}
+
+function taxonomy_exists(string $taxonomy): bool
+{
+    return isset($GLOBALS['cel_test_term_counts'][$taxonomy])
+        || isset($GLOBALS['cel_test_terms'][$taxonomy]);
+}
+
+function wp_count_posts(string $type): object
+{
+    return (object) ['publish' => 0];
+}
+
+function wp_count_terms(array|string $args = [], array $deprecated = []): int
+{
+    if (is_string($args)) {
+        $taxonomy = $args;
+    } else {
+        $taxonomy = (string) ($args['taxonomy'] ?? '');
+    }
+
+    return (int) ($GLOBALS['cel_test_term_counts'][$taxonomy] ?? 0);
+}
+
+function get_terms(array $args = []): array
+{
+    $taxonomy = (string) ($args['taxonomy'] ?? '');
+    $terms    = $GLOBALS['cel_test_terms'][$taxonomy] ?? [];
+    $offset   = (int) ($args['offset'] ?? 0);
+    $number   = (int) ($args['number'] ?? 0);
+    $fields   = (string) ($args['fields'] ?? 'all');
+
+    if (! empty($args['meta_query']) && is_array($args['meta_query'])) {
+        $terms = array_values(array_filter($terms, static function (object $term) use ($args): bool {
+            $metaQuery = $args['meta_query'];
+            $noindex = $GLOBALS['cel_test_term_meta'][(int) ($term->term_id ?? 0)]['_cel_noindex'] ?? null;
+
+            foreach ($metaQuery as $clause) {
+                if (! is_array($clause)) {
+                    continue;
+                }
+
+                $key = (string) ($clause['key'] ?? '');
+                $compare = (string) ($clause['compare'] ?? '=');
+                $value = $clause['value'] ?? null;
+
+                if ($key !== '_cel_noindex') {
+                    continue;
+                }
+
+                if ($compare === 'NOT EXISTS' && $noindex === null) {
+                    return true;
+                }
+
+                if ($compare === '!=' && (string) $noindex !== (string) $value) {
+                    return true;
+                }
+            }
+
+            return false;
+        }));
+    }
+
+    if ($number <= 0) {
+        $terms = array_slice($terms, $offset);
+    } else {
+        $terms = array_slice($terms, $offset, $number);
+    }
+
+    if ($fields === 'ids') {
+        return array_map(static fn(object $term): int => (int) $term->term_id, $terms);
+    }
+
+    return $terms;
+}
+
+function get_term_meta(int $termId, string $key, bool $single = false): mixed
+{
+    return $GLOBALS['cel_test_term_meta'][$termId][$key] ?? '';
+}
+
+function update_term_meta(int $termId, string $metaKey, mixed $metaValue): bool
+{
+    $GLOBALS['cel_test_term_meta'][$termId][$metaKey] = $metaValue;
+
+    return true;
+}
+
+function delete_term_meta(int $termId, string $metaKey): bool
+{
+    unset($GLOBALS['cel_test_term_meta'][$termId][$metaKey]);
+
+    return true;
+}
+
+function get_term_link(object|int|string $term): string
+{
+    $termId = is_object($term) ? (int) ($term->term_id ?? 0) : (int) $term;
+
+    return 'https://example.org/term-' . $termId . '/';
+}
+
+function is_wp_error(mixed $thing): bool
+{
+    return $thing instanceof WP_Error;
+}
+
+function update_postmeta_cache(array $postIds): void
+{
+}
+
+function _prime_post_caches(array $ids, bool $updateTermCache = true, bool $updateMetaCache = true): void
+{
+}
+
+function get_post(int|object|null $post = null): object|null
+{
+    if (is_object($post)) {
+        return $post;
+    }
+
+    if ($post === null) {
+        return $GLOBALS['cel_test_current_post'];
+    }
+
+    return $GLOBALS['cel_test_posts'][(int) $post] ?? null;
+}
+
+function get_post_meta(int $postId, string $key, bool $single = false): mixed
+{
+    return $GLOBALS['cel_test_post_meta'][$postId][$key] ?? '';
+}
+
+function get_permalink(int|object|null $post = null): string|false
+{
+    $postObject = is_object($post) ? $post : get_post($post);
+    if (! $postObject) {
+        return false;
+    }
+
+    return $postObject->permalink ?? ('https://example.org/post-' . (int) $postObject->ID . '/');
+}
+
+function get_the_title(int|object $post): string
+{
+    $postObject = is_object($post) ? $post : get_post($post);
+
+    return $postObject->post_title ?? '';
+}
+
+function get_the_ID(): int
+{
+    if ($GLOBALS['cel_test_current_post_id']) {
+        return (int) $GLOBALS['cel_test_current_post_id'];
+    }
+
+    return (int) (($GLOBALS['cel_test_current_post']->ID ?? 0));
+}
+
+function wp_get_document_title(): string
+{
+    if ($GLOBALS['cel_test_document_title'] !== '') {
+        return (string) $GLOBALS['cel_test_document_title'];
+    }
+
+    $post = get_post();
+    return $post ? (string) ($post->post_title ?? '') : '';
+}
+
+function wp_get_canonical_url(int $postId = 0): string
+{
+    $link = get_permalink($postId);
+    return $link ? (string) $link : '';
+}
+
+function has_post_thumbnail(int|object|null $post = null): bool
+{
+    $postObject = is_object($post) ? $post : get_post($post);
+    if (! $postObject) {
+        return false;
+    }
+
+    return (int) ($GLOBALS['cel_test_post_meta'][(int) $postObject->ID]['_thumbnail_id'] ?? 0) > 0;
+}
+
+function get_post_thumbnail_id(int|object $post): int
+{
+    $postObject = is_object($post) ? $post : get_post($post);
+    if (! $postObject) {
+        return 0;
+    }
+
+    return (int) ($GLOBALS['cel_test_post_meta'][(int) $postObject->ID]['_thumbnail_id'] ?? 0);
+}
+
+function wp_get_attachment_image_src(int $attachmentId, string $size = 'thumbnail'): array|false
+{
+    $url = $GLOBALS['cel_test_post_meta'][$attachmentId]['_attachment_url'] ?? '';
+    if ($url === '') {
+        return false;
+    }
+
+    return [$url, 1200, 630];
+}
+
+function get_the_date(string $format = '', int|object|null $post = null): string
+{
+    $postObject = is_object($post) ? $post : get_post($post);
+    $date = $postObject->post_date_gmt ?? gmdate('Y-m-d H:i:s');
+    $timestamp = strtotime((string) $date) ?: time();
+
+    return $format !== '' ? gmdate($format, $timestamp) : gmdate('Y-m-d', $timestamp);
+}
+
+function get_the_modified_date(string $format = '', int|object|null $post = null): string
+{
+    $postObject = is_object($post) ? $post : get_post($post);
+    $date = $postObject->post_modified_gmt ?? $postObject->post_date_gmt ?? gmdate('Y-m-d H:i:s');
+    $timestamp = strtotime((string) $date) ?: time();
+
+    return $format !== '' ? gmdate($format, $timestamp) : gmdate('Y-m-d', $timestamp);
+}
+
+function get_query_var(string $var, mixed $default = ''): mixed
+{
+    return $GLOBALS['cel_test_query_vars'][$var] ?? $default;
+}
+
+function get_pagenum_link(int $pagenum = 1): string
+{
+    return 'https://example.org/page/' . $pagenum . '/';
+}
+
+function get_queried_object(): mixed
+{
+    return $GLOBALS['cel_test_queried_object'];
+}
+
+function is_front_page(): bool
+{
+    return (bool) ($GLOBALS['cel_test_conditionals']['is_front_page'] ?? false);
+}
+
+function is_home(): bool
+{
+    return (bool) ($GLOBALS['cel_test_conditionals']['is_home'] ?? false);
+}
+
+function is_singular(string $postType = ''): bool
+{
+    $isSingular = (bool) ($GLOBALS['cel_test_conditionals']['is_singular'] ?? false);
+    if (! $isSingular) {
+        return false;
+    }
+
+    if ($postType === '') {
+        return true;
+    }
+
+    $post = get_post();
+    return $post !== null && ($post->post_type ?? '') === $postType;
+}
+
+function is_category(): bool
+{
+    return (bool) ($GLOBALS['cel_test_conditionals']['is_category'] ?? false);
+}
+
+function is_tag(): bool
+{
+    return (bool) ($GLOBALS['cel_test_conditionals']['is_tag'] ?? false);
+}
+
+function is_tax(): bool
+{
+    return (bool) ($GLOBALS['cel_test_conditionals']['is_tax'] ?? false);
+}
+
+function is_post_type_archive(): bool
+{
+    return (bool) ($GLOBALS['cel_test_conditionals']['is_post_type_archive'] ?? false);
+}
+
+function is_author(): bool
+{
+    return (bool) ($GLOBALS['cel_test_conditionals']['is_author'] ?? false);
+}
+
+function is_archive(): bool
+{
+    return (bool) ($GLOBALS['cel_test_conditionals']['is_archive'] ?? false);
+}
+
+function is_search(): bool
+{
+    return (bool) ($GLOBALS['cel_test_conditionals']['is_search'] ?? false);
+}
+
+function is_date(): bool
+{
+    return (bool) ($GLOBALS['cel_test_conditionals']['is_date'] ?? false);
+}
+
+function is_paged(): bool
+{
+    return (bool) ($GLOBALS['cel_test_conditionals']['is_paged'] ?? false);
+}
+
+function post_password_required(object|null $post = null): bool
+{
+    return false;
+}
+
+function strip_shortcodes(string $content): string
+{
+    return $content;
+}
+
+function wp_strip_all_tags(string $text): string
+{
+    return trim(strip_tags($text));
+}
+
+function current_user_can(string $capability, mixed ...$args): bool
+{
+    if ($GLOBALS['cel_test_user_caps'] === []) {
+        return true;
+    }
+
+    return (bool) ($GLOBALS['cel_test_user_caps'][$capability] ?? false);
+}
+
+function wp_verify_nonce(string $nonce, string|int $action = -1): bool|int
+{
+    return $nonce === 'nonce-' . $action ? 1 : false;
 }
 
 function wp_get_referer(): string|false

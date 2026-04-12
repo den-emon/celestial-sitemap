@@ -77,6 +77,27 @@ abstract class CelestialSitemap_TestCase extends WP_UnitTestCase
         $this->clearScheduledHook('cel_pregenerate_sitemaps');
         $this->removePluginCacheDirectory();
 
+        $GLOBALS['cel_wp_enqueued_styles'] = [];
+        $GLOBALS['cel_wp_enqueued_scripts'] = [];
+        $GLOBALS['cel_wp_localized_scripts'] = [];
+        $GLOBALS['cel_test_term_counts'] = [];
+        $GLOBALS['cel_test_terms'] = [];
+        $GLOBALS['cel_test_term_meta'] = [];
+        $GLOBALS['cel_test_posts'] = [];
+        $GLOBALS['cel_test_post_meta'] = [];
+        $GLOBALS['cel_test_taxonomies'] = [];
+        $GLOBALS['cel_test_user_caps'] = [];
+        $GLOBALS['cel_test_conditionals'] = [];
+        $GLOBALS['cel_test_query_vars'] = [];
+        $GLOBALS['cel_test_queried_object'] = null;
+        $GLOBALS['cel_test_current_post'] = null;
+        $GLOBALS['cel_test_current_post_id'] = 0;
+        $GLOBALS['cel_test_document_title'] = '';
+        $GLOBALS['cel_test_registered_post_types'] = [];
+        $GLOBALS['cel_last_json_response'] = null;
+        $GLOBALS['cel_last_status_header'] = null;
+        $_POST = [];
+
         wp_cache_flush();
     }
 

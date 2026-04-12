@@ -58,6 +58,55 @@ final class NotFoundLoggerTest extends CelestialSitemap_TestCase
         $this->assertSame(1, (int) get_transient('cel_404_rate_count'));
     }
 
+    public function test_table_cap_still_allows_existing_urls_to_be_updated(): void
+    {
+        global $wpdb;
+
+        update_option('cel_404_max_rows', 1);
+
+        $wpdb->insert(
+            $wpdb->prefix . 'cel_404_log',
+            [
+                'url'        => '/already-known/',
+                'referrer'   => 'https://example.org/original',
+                'user_agent' => 'Agent A',
+                'hit_count'  => 1,
+                'first_seen' => current_time('mysql', true),
+                'last_seen'  => current_time('mysql', true),
+            ],
+            ['%s', '%s', '%s', '%d', '%s', '%s']
+        );
+        set_transient('cel_404_row_count', 1, 300);
+
+        $this->prime404Request('/already-known/', 'https://example.org/updated', 'Agent B');
+        $this->logger->log404();
+
+        $row = $wpdb->get_row("SELECT * FROM {$wpdb->prefix}cel_404_log LIMIT 1", ARRAY_A);
+
+        // 上限到達後も既存 URL の upsert は継続されるべき。
+        $this->assertSame(1, NotFoundLogger::countAll());
+        $this->assertSame(2, (int) $row['hit_count']);
+        $this->assertSame('https://example.org/updated', $row['referrer']);
+        $this->assertSame('Agent B', $row['user_agent']);
+    }
+
+    public function test_new_inserts_clear_the_cached_row_count_before_the_next_cap_check(): void
+    {
+        update_option('cel_404_max_rows', 1);
+        set_transient('cel_404_row_count', 0, 300);
+
+        $this->prime404Request('/first-miss/', 'https://example.org/first', 'Agent/1.0');
+        $this->logger->log404();
+
+        $this->assertFalse(get_transient('cel_404_row_count'));
+
+        $this->prime404Request('/second-miss/', 'https://example.org/second', 'Agent/2.0');
+        $this->logger->log404();
+
+        // 新規 insert 後に件数キャッシュを捨て、次の判定では DB 件数で上限を守る。
+        $this->assertSame(1, NotFoundLogger::countAll());
+    }
+
     public function test_cleanup_removes_stale_rows_and_clears_cached_count(): void
     {
         global $wpdb;

@@ -96,10 +96,26 @@ final class CanonicalManager
 
         $paged = (int) get_query_var('paged', 0);
 
-        if (is_front_page() || is_home()) {
+        if (is_front_page()) {
             if ($paged > 1) {
                 return (string) get_pagenum_link($paged);
             }
+            return home_url('/');
+        }
+
+        if (is_home()) {
+            if ($paged > 1) {
+                return (string) get_pagenum_link($paged);
+            }
+
+            $postsPageId = (int) get_option('page_for_posts', 0);
+            if ($postsPageId > 0) {
+                $link = get_permalink($postsPageId);
+                if ($link) {
+                    return (string) $link;
+                }
+            }
+
             return home_url('/');
         }
 

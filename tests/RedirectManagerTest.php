@@ -65,6 +65,26 @@ final class RedirectManagerTest extends CelestialSitemap_TestCase
         RedirectManager::add('/target', 'https://example.org/source/', 301, 'exact');
     }
 
+    public function test_add_rejects_prefix_redirects_that_resolve_to_the_same_path(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        RedirectManager::add('/docs', 'https://example.org/docs/', 301, 'prefix');
+    }
+
+    public function test_add_detects_loops_between_prefix_and_existing_exact_redirects(): void
+    {
+        RedirectManager::add('/manual', 'https://example.org/docs/', 301, 'exact');
+
+        $this->expectException(\InvalidArgumentException::class);
+        RedirectManager::add('/docs', 'https://example.org/manual/', 301, 'prefix');
+    }
+
+    public function test_add_rejects_regex_redirects_that_resolve_back_to_the_same_match(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        RedirectManager::add('/products/(\\d+)/', 'https://example.org/products/$1/', 301, 'regex');
+    }
+
     public function test_find_redirect_prefers_exact_and_supports_prefix_and_regex_matches(): void
     {
         RedirectManager::add('/docs', 'https://example.org/manual', 301, 'prefix');
@@ -83,6 +103,26 @@ final class RedirectManagerTest extends CelestialSitemap_TestCase
 
         // regex ルールはキャプチャを $1 形式で差し替える。
         $regex = $this->invokePrivateMethod($this->manager, 'findRedirect', ['/products/42/']);
+        $this->assertSame('https://example.org/items/42/', $regex['target_url']);
+        $this->assertSame(307, $regex['status_code']);
+    }
+
+    public function test_find_via_direct_supports_prefix_and_regex_matches(): void
+    {
+        RedirectManager::add('/docs', 'https://example.org/manual', 301, 'prefix');
+        RedirectManager::add('/docs/api', 'https://example.org/reference', 302, 'exact');
+        RedirectManager::add('/products/(\\d+)/', 'https://example.org/items/$1/', 307, 'regex');
+
+        // large-table fallback でも exact / prefix / regex の優先順を保つ。
+        $exact = $this->invokePrivateMethod($this->manager, 'findViaDirect', ['/docs/api/']);
+        $this->assertSame('https://example.org/reference', $exact['target_url']);
+        $this->assertSame(302, $exact['status_code']);
+
+        $prefix = $this->invokePrivateMethod($this->manager, 'findViaDirect', ['/docs/guide/getting-started/']);
+        $this->assertSame('https://example.org/manual/guide/getting-started/', $prefix['target_url']);
+        $this->assertSame(301, $prefix['status_code']);
+
+        $regex = $this->invokePrivateMethod($this->manager, 'findViaDirect', ['/products/42/']);
         $this->assertSame('https://example.org/items/42/', $regex['target_url']);
         $this->assertSame(307, $regex['status_code']);
     }
